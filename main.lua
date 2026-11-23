@@ -1,9 +1,10 @@
--- SOUZADAS | painel em Luau, sem dependencias externas.
+-- SOUZADAS | painel em Luau; logo PNG opcional hospedada no GitHub.
 -- Personagens padrao: Humanoid, Head e HumanoidRootPart.
 -- RightShift: painel (configuravel pelo botao do cabecalho).
 -- Clique no atalho do cabecalho e pressione a nova tecla. Esc cancela.
 -- X: encerra e remove todos os efeitos. Atalhos valem nesta execucao.
--- Interface baseada na referencia; logotipo vetorial aproximado.
+-- Logo original carregada com writefile + getcustomasset/getsynasset.
+-- Identidade vetorial de reserva se o executor nao oferecer essas APIs.
 -- Velocidade 30 = mira direta; valores menores = suavizacao acumulada.
 -- Aba Jogador: speed local via Humanoid.WalkSpeed, com restauracao.
 -- N: alterna noclip. O atalho pode ser trocado na aba Jogador.
@@ -39,6 +40,40 @@ local cleanup
 local purple = Color3.fromRGB(177, 108, 245)
 local light = Color3.fromRGB(238, 232, 250)
 local muted = Color3.fromRGB(166, 157, 187)
+
+-- BEGIN LOGO LOADER
+local LOGO_URL = "https://raw.githubusercontent.com/Souzhaaa/ScriptAimbot/main/LogoSouzadas.png"
+local LOGO_FILE = "SOUZADAS_Logo.png"
+local function loadLogoAsset()
+    local registerAsset = type(getcustomasset) == "function" and getcustomasset or getsynasset
+    if type(registerAsset) ~= "function" or type(writefile) ~= "function" then
+        return nil, "Executor sem suporte a imagem local; usando logo de reserva."
+    end
+    local ok, bytes = pcall(function() return game:HttpGet(LOGO_URL) end)
+    if not ok or type(bytes) ~= "string" then return nil, "Falha ao baixar a logo; usando reserva." end
+    if #bytes < 33 or #bytes > 5 * 1024 * 1024
+        or bytes:sub(1, 8) ~= "\137PNG\r\n\26\n" or bytes:sub(13, 16) ~= "IHDR" then
+        return nil, "Resposta nao e um PNG valido para a logo; usando reserva."
+    end
+    local function readU32(offset)
+        local a, b, c, d = bytes:byte(offset, offset + 3)
+        return ((a * 256 + b) * 256 + c) * 256 + d
+    end
+    -- Regioes medidas na imagem enviada: 1312 x 1199 pixels.
+    -- Mudancas nessa composicao exigem ajustar os retangulos do cabecalho.
+    if readU32(17) ~= 1312 or readU32(21) ~= 1199 then
+        return nil, "A imagem da logo mudou de tamanho; usando reserva."
+    end
+    if destroyed then return nil end
+    local saved = pcall(writefile, LOGO_FILE, bytes)
+    if not saved or destroyed then return nil, "Logo nao foi gravada; usando reserva." end
+    local registered, asset = pcall(registerAsset, LOGO_FILE)
+    if not registered or type(asset) ~= "string" or asset == "" then
+        return nil, "Logo nao foi registrada pelo executor; usando reserva."
+    end
+    return asset
+end
+-- END LOGO LOADER
 
 -- BEGIN SPEED CONTROLLER
 -- Altera somente ao acionar o controle, ajustar o valor ou renascer.
@@ -215,7 +250,7 @@ stroke(panel, Color3.fromRGB(184, 143, 222), 0.08, 1.2)
 gradient(panel, Color3.fromRGB(25, 19, 36), Color3.fromRGB(14, 13, 22), 35)
 local scale = make("UIScale", {Scale = 1}, panel)
 
--- Logotipo S construido com segmentos; nao depende de uma imagem hospedada.
+-- Identidade de reserva, mantida ate a imagem original terminar de carregar.
 local logo = make("Frame", {
     Position = UDim2.fromOffset(29, 17), Size = UDim2.fromOffset(65, 51),
     BackgroundTransparency = 1,
@@ -237,8 +272,41 @@ make("Frame", {
     Position = UDim2.fromOffset(110, 19), Size = UDim2.fromOffset(1, 43),
     BackgroundColor3 = Color3.fromRGB(98, 78, 123), BorderSizePixel = 0,
 }, panel)
-label(panel, "SOUZADAS", 126, 16, 430, 32, 28, light, true)
+local fallbackTitle = label(panel, "SOUZADAS", 126, 16, 430, 32, 28, light, true)
 label(panel, "Configurações", 127, 49, 400, 22, 16, muted)
+-- As duas regioes usam o MESMO PNG original, sem gerar outra imagem.
+local logoSymbol = make("ImageLabel", {
+    Position = UDim2.fromOffset(25, 10), Size = UDim2.fromOffset(74, 63),
+    BackgroundTransparency = 1, ImageTransparency = 1,
+    Image = "", ScaleType = Enum.ScaleType.Fit, ZIndex = 2,
+    ImageRectOffset = Vector2.new(245, 185), ImageRectSize = Vector2.new(830, 705),
+}, panel)
+local logoWordmark = make("ImageLabel", {
+    Position = UDim2.fromOffset(123, 12), Size = UDim2.fromOffset(294, 40),
+    BackgroundTransparency = 1, ImageTransparency = 1,
+    Image = "", ScaleType = Enum.ScaleType.Fit, ZIndex = 2,
+    ImageRectOffset = Vector2.new(55, 898), ImageRectSize = Vector2.new(1200, 170),
+}, panel)
+task.spawn(function()
+    local asset, reason = loadLogoAsset()
+    if destroyed or not gui.Parent then return end
+    if not asset then
+        if reason then warn("[SOUZADAS] " .. reason) end
+        return
+    end
+    logoSymbol.Image, logoWordmark.Image = asset, asset
+    local deadline = os.clock() + 8
+    repeat
+        if destroyed or not gui.Parent then return end
+        if logoSymbol.IsLoaded and logoWordmark.IsLoaded then
+            logo.Visible, fallbackTitle.Visible = false, false
+            logoSymbol.ImageTransparency, logoWordmark.ImageTransparency = 0, 0
+            return
+        end
+        task.wait(0.1)
+    until os.clock() >= deadline
+    if not destroyed then warn("[SOUZADAS] Imagem nao carregou; mantendo logo de reserva.") end
+end)
 local keyHint = button(panel, "RightShift", 804, 23, 122, 34)
 local close = button(panel, "×", 945, 21, 36, 36)
 close.BackgroundTransparency = 1
