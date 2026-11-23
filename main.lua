@@ -6,6 +6,7 @@
 -- Interface baseada na referencia; logotipo vetorial aproximado.
 -- Velocidade 30 = mira direta; valores menores = suavizacao acumulada.
 -- Aba Jogador: speed local via Humanoid.WalkSpeed, com restauracao.
+-- N: alterna noclip. O atalho pode ser trocado na aba Jogador.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -25,11 +26,12 @@ local defaults = {
     MaxDistance = 1500, AimPart = "Head",
     Activation = 1, PanelKey = Enum.KeyCode.RightShift,
     Speed = false, SpeedValue = 24,
+    Noclip = false, NoclipKey = Enum.KeyCode.N,
 }
 local settings = table.clone(defaults)
 local connections, refreshers, effects, animations = {}, {}, {}, {}
 local activeSlider, dragging, dragStart, panelStart
-local captureTarget, footerHint
+local captureTarget, footerHint, noclipKeyButton
 local suppressAimUntilRelease = false
 local destroyed, focused = false, true
 local binding = "Souzadas_" .. HttpService:GenerateGUID(false)
@@ -91,6 +93,52 @@ local function watchSpeedCharacter(character)
     if humanoid then attach(humanoid) end
 end
 -- END SPEED CONTROLLER
+
+-- BEGIN NOCLIP CONTROLLER
+local noclipCharacter
+local noclipParts = {}
+local noclipAddedConnection, noclipRemovedConnection
+local function restoreNoclipPart(part)
+    local original = noclipParts[part]
+    if original == nil then return end
+    noclipParts[part] = nil
+    if part.Parent and part.CanCollide == false then part.CanCollide = original end
+end
+local function restoreNoclip()
+    if noclipAddedConnection then noclipAddedConnection:Disconnect(); noclipAddedConnection = nil end
+    if noclipRemovedConnection then noclipRemovedConnection:Disconnect(); noclipRemovedConnection = nil end
+    for part in pairs(noclipParts) do restoreNoclipPart(part) end
+    noclipCharacter = nil
+end
+local function rememberNoclipPart(part)
+    if not part:IsA("BasePart") then return end
+    if noclipParts[part] == nil then noclipParts[part] = part.CanCollide end
+    part.CanCollide = false
+end
+local function syncNoclip()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if destroyed or not settings.Noclip or not character or not humanoid or humanoid.Health <= 0 then
+        restoreNoclip()
+        return
+    end
+    if character ~= noclipCharacter then
+        restoreNoclip()
+        noclipCharacter = character
+        noclipAddedConnection = character.DescendantAdded:Connect(rememberNoclipPart)
+        noclipRemovedConnection = character.DescendantRemoving:Connect(restoreNoclipPart)
+        for _, part in ipairs(character:GetDescendants()) do rememberNoclipPart(part) end
+    end
+    -- Restaura fora do personagem; revalida colisoes antes da simulacao.
+    for part in pairs(noclipParts) do
+        if part.Parent and part:IsDescendantOf(character) then
+            if part.CanCollide then part.CanCollide = false end
+        else
+            restoreNoclipPart(part)
+        end
+    end
+end
+-- END NOCLIP CONTROLLER
 
 local function listen(signal, fn)
     local connection = signal:Connect(fn)
@@ -350,9 +398,13 @@ local activationKeys = {[2] = Enum.KeyCode.LeftAlt, [3] = Enum.KeyCode.E}
 local function refreshBindings()
     activation.Text = activationNames[settings.Activation] .. "  ▾"
     keyHint.Text = captureTarget == "PanelKey" and "Tecla..." or settings.PanelKey.Name
+    if noclipKeyButton then
+        noclipKeyButton.Text = captureTarget == "NoclipKey"
+            and "Pressione uma tecla..." or settings.NoclipKey.Name .. " · trocar"
+    end
     if footerHint then
         footerHint.Text = captureTarget and "Escolha o atalho · Esc cancela"
-            or settings.PanelKey.Name .. " oculta · clique no atalho para trocar"
+            or settings.PanelKey.Name .. " painel · " .. settings.NoclipKey.Name .. " noclip · clique no atalho para trocar"
     end
 end
 local function beginCapture(target)
@@ -366,10 +418,10 @@ local function cancelCapture()
 end
 table.insert(refreshers, refreshBindings)
 listen(activation.Activated, function()
-    settings.Activation = settings.Activation % #activationNames + 1
-    if activationKeys[settings.Activation] == settings.PanelKey then
+    repeat
         settings.Activation = settings.Activation % #activationNames + 1
-    end
+    until activationKeys[settings.Activation] ~= settings.PanelKey
+        and activationKeys[settings.Activation] ~= settings.NoclipKey
     refreshBindings()
 end)
 listen(keyHint.Activated, function() beginCapture("PanelKey") end)
@@ -394,11 +446,16 @@ label(espRight, "O alcance e o filtro de equipe valem nas duas abas.", 25, 281, 
 toggle(speedLeft, "Ativar speed", "Speed", 88, syncSpeed)
 line(speedLeft, 25, 137, 419)
 slider(speedLeft, "Velocidade", "SpeedValue", 8, 80, " studs/s", 155, syncSpeed)
-label(speedLeft, "Ative para aplicar o valor escolhido.", 25, 238, 419, 24, 13, muted)
-label(speedLeft, "Desligar restaura o valor anterior, se ainda aplicado.", 25, 268, 419, 24, 11, muted)
+toggle(speedLeft, "Ativar noclip", "Noclip", 221, syncNoclip)
+line(speedLeft, 25, 266, 419)
+label(speedLeft, "Tecla do noclip", 25, 277, 180, 32, 14)
+noclipKeyButton = button(speedLeft, "", 218, 277, 227, 32)
+listen(noclipKeyButton.Activated, function() beginCapture("NoclipKey") end)
+refreshBindings()
 local speedState = label(speedRight, "Desativado", 25, 88, 419, 34, 21, purple, true)
 local speedCurrentLabel = label(speedRight, "Velocidade atual: —", 25, 151, 419, 28, 16)
 local speedOriginalLabel = label(speedRight, "Valor anterior: —", 25, 199, 419, 28, 15, muted)
+local noclipStateLabel = label(speedRight, "Noclip: desativado", 25, 254, 419, 28, 16, muted)
 local function refreshSpeedStatus()
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -409,6 +466,8 @@ local function refreshSpeedStatus()
     else speedState.Text = "Ativado" end
     speedCurrentLabel.Text = "Velocidade atual: " .. (humanoid and tostring(humanoid.WalkSpeed) .. " studs/s" or "—")
     speedOriginalLabel.Text = "Valor anterior: " .. (speedOriginal and tostring(speedOriginal) .. " studs/s" or "—")
+    noclipStateLabel.Text = not settings.Noclip and "Noclip: desativado"
+        or (noclipCharacter and "Noclip: ativado" or "Noclip: aguardando personagem")
 end
 table.insert(refreshers, refreshSpeedStatus)
 listen(player.CharacterAdded, watchSpeedCharacter)
@@ -417,6 +476,12 @@ listen(player.CharacterRemoving, function(character)
     disconnectSpeedWatchers()
 end)
 watchSpeedCharacter(player.Character)
+listen(RunService.Stepped, function()
+    if settings.Noclip then syncNoclip() end
+end)
+listen(player.CharacterRemoving, function(character)
+    if character == noclipCharacter then restoreNoclip() end
+end)
 refreshSpeedStatus()
 
 label(panel, "⌨", 30, 511, 40, 30, 25, muted)
@@ -429,6 +494,7 @@ listen(reset.Activated, function()
     suppressAimUntilRelease = true
     for key, value in pairs(defaults) do settings[key] = value end
     syncSpeed()
+    syncNoclip()
     for _, refresh in ipairs(refreshers) do refresh() end
 end)
 
@@ -482,7 +548,8 @@ local function togglePanel()
     dragging, activeSlider = false, nil
     cancelCapture()
 end
-listen(Input.InputBegan, function(input, processed)
+-- BEGIN SHORTCUT HANDLER
+local function handleKeyInput(input, processed)
     if captureTarget then
         if input.KeyCode == Enum.KeyCode.Escape then cancelCapture(); return end
         if Input:GetFocusedTextBox() then return end
@@ -493,7 +560,8 @@ listen(Input.InputBegan, function(input, processed)
         end
         if not candidate then return end
         -- Os atalhos nao compartilham a mesma tecla para evitar conflitos.
-        local conflict = candidate == activationKeys[settings.Activation]
+        local otherKey = captureTarget == "PanelKey" and settings.NoclipKey or settings.PanelKey
+        local conflict = candidate == activationKeys[settings.Activation] or candidate == otherKey
         if conflict then
             footerHint.Text = "Tecla já usada · escolha outra ou Esc para cancelar"
             return
@@ -503,10 +571,18 @@ listen(Input.InputBegan, function(input, processed)
         cancelCapture()
         return
     end
-    if not processed and not Input:GetFocusedTextBox()
-        and input.UserInputType == Enum.UserInputType.Keyboard
-        and input.KeyCode == settings.PanelKey then togglePanel() end
-end)
+    if processed or Input:GetFocusedTextBox()
+        or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.KeyCode == settings.PanelKey then
+        togglePanel()
+    elseif input.KeyCode == settings.NoclipKey then
+        settings.Noclip = not settings.Noclip
+        syncNoclip()
+        for _, refresh in ipairs(refreshers) do refresh() end
+    end
+end
+-- END SHORTCUT HANDLER
+listen(Input.InputBegan, handleKeyInput)
 listen(Input.WindowFocusReleased, function()
     focused, dragging, activeSlider = false, false, nil
     suppressAimUntilRelease = true
@@ -728,6 +804,7 @@ cleanup = function()
     destroyed = true
     disconnectSpeedWatchers()
     restoreSpeed()
+    restoreNoclip()
     clearAim()
     RunService:UnbindFromRenderStep(binding)
     for _, connection in ipairs(connections) do connection:Disconnect() end
