@@ -5,6 +5,7 @@
 -- X: encerra e remove todos os efeitos. Atalhos valem nesta execucao.
 -- Interface baseada na referencia; logotipo vetorial aproximado.
 -- Velocidade 30 = mira direta; valores menores = suavizacao acumulada.
+-- Aba Jogador: speed local via Humanoid.WalkSpeed, com restauracao.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -18,11 +19,12 @@ for _, key in ipairs({"__MeowAimESP", "__SouzadasPanel"}) do
 end
 
 local defaults = {
-    Aim = false, ESP = false, TeamCheck = true, VisibleOnly = true,
+    Aim = false, ESP = false, TeamCheck = true, WallCheck = true,
     ThroughWalls = false, ShowFOV = true, Names = true,
     Health = true, Distance = true, FOV = 150, Response = 30,
     MaxDistance = 1500, AimPart = "Head",
     Activation = 1, PanelKey = Enum.KeyCode.RightShift,
+    Speed = false, SpeedValue = 24,
 }
 local settings = table.clone(defaults)
 local connections, refreshers, effects, animations = {}, {}, {}, {}
@@ -35,6 +37,60 @@ local cleanup
 local purple = Color3.fromRGB(177, 108, 245)
 local light = Color3.fromRGB(238, 232, 250)
 local muted = Color3.fromRGB(166, 157, 187)
+
+-- BEGIN SPEED CONTROLLER
+-- Altera somente ao acionar o controle, ajustar o valor ou renascer.
+-- Nao reescreve WalkSpeed continuamente se o jogo substituir esse valor.
+local speedHumanoid, speedOriginal, speedLastApplied
+local speedChildConnection, speedDiedConnection
+local function restoreSpeed()
+    local humanoid, original, applied = speedHumanoid, speedOriginal, speedLastApplied
+    speedHumanoid, speedOriginal, speedLastApplied = nil, nil, nil
+    -- Nao sobrescreve uma mudanca posterior feita pelo proprio jogo.
+    if humanoid and humanoid.Parent and original ~= nil and applied ~= nil
+        and humanoid.WalkSpeed == applied then
+        humanoid.WalkSpeed = original
+    end
+end
+local function syncSpeed()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if destroyed or not settings.Speed or not humanoid or humanoid.Health <= 0 then
+        restoreSpeed()
+        return
+    end
+    if humanoid ~= speedHumanoid then
+        restoreSpeed()
+        speedHumanoid, speedOriginal = humanoid, humanoid.WalkSpeed
+    end
+    local value = tonumber(settings.SpeedValue) or defaults.SpeedValue
+    if value ~= value or math.abs(value) == math.huge then value = defaults.SpeedValue end
+    value = math.clamp(math.floor(value + 0.5), 8, 80)
+    settings.SpeedValue = value
+    humanoid.WalkSpeed = value
+    speedLastApplied = value
+end
+local function disconnectSpeedWatchers()
+    if speedChildConnection then speedChildConnection:Disconnect(); speedChildConnection = nil end
+    if speedDiedConnection then speedDiedConnection:Disconnect(); speedDiedConnection = nil end
+end
+local function watchSpeedCharacter(character)
+    disconnectSpeedWatchers()
+    restoreSpeed()
+    if destroyed or not character then return end
+    local function attach(humanoid)
+        if destroyed or player.Character ~= character then return end
+        if speedDiedConnection then speedDiedConnection:Disconnect() end
+        speedDiedConnection = humanoid.Died:Connect(restoreSpeed)
+        syncSpeed()
+    end
+    speedChildConnection = character.ChildAdded:Connect(function(child)
+        if child:IsA("Humanoid") then attach(child) end
+    end)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then attach(humanoid) end
+end
+-- END SPEED CONTROLLER
 
 local function listen(signal, fn)
     local connection = signal:Connect(fn)
@@ -146,7 +202,7 @@ line(panel, 0, 491, 1000)
 
 local pages, tabs = {}, {}
 local selectedTab = "Aimbot"
-for index, name in ipairs({"Aimbot", "ESP"}) do
+for index, name in ipairs({"Aimbot", "ESP", "Jogador"}) do
     local tab = button(panel, name, 29 + (index - 1) * 136, 86, 124, 42)
     tab.BackgroundTransparency = 1
     tab:FindFirstChildOfClass("UIStroke").Transparency = 1
@@ -198,8 +254,10 @@ local aimLeft = card(pages.Aimbot, 0, "Assistência de mira", "Ajuste a seleçã
 local aimRight = card(pages.Aimbot, 487, "Precisão e alcance", "Defina os limites da assistência", "◇")
 local espLeft = card(pages.ESP, 0, "Visualização de jogadores", "Escolha as informações exibidas", "◉")
 local espRight = card(pages.ESP, 487, "Filtros e alcance", "Controle a exibição dos jogadores", "◇")
+local speedLeft = card(pages.Jogador, 0, "Movimentação", "Ajuste a velocidade de caminhada", "»")
+local speedRight = card(pages.Jogador, 487, "Estado do personagem", "Acompanhe a velocidade atual", "◇")
 
-local function toggle(parent, title, key, y)
+local function toggle(parent, title, key, y, onChanged)
     label(parent, title, 25, y, 350, 35, 15)
     local control = button(parent, "", 398, y + 4, 47, 26)
     corner(control, 13)
@@ -216,11 +274,12 @@ local function toggle(parent, title, key, y)
     table.insert(refreshers, refresh)
     listen(control.Activated, function()
         settings[key] = not settings[key]
+        if onChanged then onChanged() end
         for _, fn in ipairs(refreshers) do fn() end
     end)
     refresh()
 end
-local function slider(parent, title, key, min, max, unit, y)
+local function slider(parent, title, key, min, max, unit, y, onChanged)
     label(parent, title, 25, y, 280, 25, 16)
     local value = label(parent, "", 294, y, 150, 25, 15, muted)
     value.TextXAlignment = Enum.TextXAlignment.Right
@@ -253,6 +312,7 @@ local function slider(parent, title, key, min, max, unit, y)
         if track.AbsoluteSize.X <= 0 then return end
         local fraction = math.clamp((x - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
         settings[key] = math.clamp(math.floor(min + fraction * (max - min) + 0.5), min, max)
+        if onChanged then onChanged() end
         -- Alcance e compartilhado entre as duas abas.
         for _, fn in ipairs(refreshers) do fn() end
     end
@@ -268,7 +328,7 @@ end
 
 toggle(aimLeft, "Ativar aimbot", "Aim", 84)
 toggle(aimLeft, "Ignorar mesma equipe", "TeamCheck", 125)
-toggle(aimLeft, "Somente com visão livre", "VisibleOnly", 166)
+toggle(aimLeft, "Checar paredes", "WallCheck", 166)
 for _, y in ipairs({123, 164, 205, 262}) do line(aimLeft, 25, y, 419) end
 label(aimLeft, "Ponto de mira", 25, 214, 180, 35, 15)
 local head = button(aimLeft, "Cabeça", 207, 216, 119, 33)
@@ -331,6 +391,34 @@ line(espRight, 25, 175, 419)
 slider(espRight, "Distância máxima", "MaxDistance", 100, 5000, " studs", 191)
 label(espRight, "O alcance e o filtro de equipe valem nas duas abas.", 25, 281, 420, 23, 11, muted)
 
+toggle(speedLeft, "Ativar speed", "Speed", 88, syncSpeed)
+line(speedLeft, 25, 137, 419)
+slider(speedLeft, "Velocidade", "SpeedValue", 8, 80, " studs/s", 155, syncSpeed)
+label(speedLeft, "Ative para aplicar o valor escolhido.", 25, 238, 419, 24, 13, muted)
+label(speedLeft, "Desligar restaura o valor anterior, se ainda aplicado.", 25, 268, 419, 24, 11, muted)
+local speedState = label(speedRight, "Desativado", 25, 88, 419, 34, 21, purple, true)
+local speedCurrentLabel = label(speedRight, "Velocidade atual: —", 25, 151, 419, 28, 16)
+local speedOriginalLabel = label(speedRight, "Valor anterior: —", 25, 199, 419, 28, 15, muted)
+local function refreshSpeedStatus()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not settings.Speed then speedState.Text = "Desativado"
+    elseif not humanoid or humanoid.Health <= 0 then speedState.Text = "Aguardando personagem"
+    elseif humanoid ~= speedHumanoid or humanoid.WalkSpeed ~= speedLastApplied then
+        speedState.Text = "Valor alterado pelo jogo"
+    else speedState.Text = "Ativado" end
+    speedCurrentLabel.Text = "Velocidade atual: " .. (humanoid and tostring(humanoid.WalkSpeed) .. " studs/s" or "—")
+    speedOriginalLabel.Text = "Valor anterior: " .. (speedOriginal and tostring(speedOriginal) .. " studs/s" or "—")
+end
+table.insert(refreshers, refreshSpeedStatus)
+listen(player.CharacterAdded, watchSpeedCharacter)
+listen(player.CharacterRemoving, function(character)
+    if speedHumanoid and speedHumanoid:IsDescendantOf(character) then restoreSpeed() end
+    disconnectSpeedWatchers()
+end)
+watchSpeedCharacter(player.Character)
+refreshSpeedStatus()
+
 label(panel, "⌨", 30, 511, 40, 30, 25, muted)
 footerHint = label(panel, "", 83, 511, 680, 30, 13, muted)
 refreshBindings()
@@ -340,6 +428,7 @@ listen(reset.Activated, function()
     captureTarget = nil
     suppressAimUntilRelease = true
     for key, value in pairs(defaults) do settings[key] = value end
+    syncSpeed()
     for _, refresh in ipairs(refreshers) do refresh() end
 end)
 
@@ -481,11 +570,22 @@ local function getCharacter(target)
 end
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
-local function visible(camera, character, position)
-    local direction = position - camera.CFrame.Position
+rayParams.IgnoreWater = true
+-- Usa CanQuery: paredes sem colisao fisica ainda podem bloquear a mira.
+rayParams.RespectCanCollide = false
+local function clearPath(origin, character, position)
+    local direction = position - origin
     if direction.Magnitude < 0.001 then return true end
-    local hit = workspace:Raycast(camera.CFrame.Position, direction, rayParams)
+    local hit = workspace:Raycast(origin, direction, rayParams)
     return hit == nil or hit.Instance:IsDescendantOf(character)
+end
+local function visible(camera, character, position, shooterOrigin)
+    if not clearPath(camera.CFrame.Position, character, position) then return false end
+    -- A camera em terceira pessoa pode enxergar alem da quina. A segunda
+    -- consulta impede adquirir um alvo oculto a partir do personagem.
+    -- A cabeca e uma referencia de visibilidade; nao e o cano real da arma.
+    if shooterOrigin and not clearPath(shooterOrigin, character, position) then return false end
+    return true
 end
 local function activationHeld()
     local held
@@ -534,6 +634,8 @@ local function render(dt)
     local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
     local alive = localHumanoid and localHumanoid.Health > 0 and localRoot and localRoot:IsA("BasePart")
     local origin = alive and localRoot.Position or camera.CFrame.Position
+    local localHead = localCharacter and localCharacter:FindFirstChild("Head")
+    local shooterOrigin = localHead and localHead:IsA("BasePart") and localHead.Position or origin
     local center = camera.ViewportSize / 2
     circle.Position = UDim2.fromOffset(center.X, center.Y)
     circle.Size = UDim2.fromOffset(settings.FOV * 2, settings.FOV * 2)
@@ -549,7 +651,7 @@ local function render(dt)
     rayParams.FilterDescendantsInstances = localCharacter and {localCharacter, camera} or {camera}
     effectElapsed = effectElapsed + dt
     local updateEffects = effectElapsed >= 0.1
-    if updateEffects then effectElapsed = 0 end
+    if updateEffects then effectElapsed = 0; refreshSpeedStatus() end
     local best, bestDistance, retained = nil, settings.FOV, nil
     for _, target in ipairs(roster) do
         local character, humanoid, root = getCharacter(target)
@@ -584,7 +686,7 @@ local function render(dt)
                 if onScreen and projected.Z > 0 then
                     local distanceToCenter = (Vector2.new(projected.X, projected.Y) - center).Magnitude
                     if distanceToCenter <= settings.FOV
-                        and (not settings.VisibleOnly or visible(camera, character, part.Position)) then
+                        and (not settings.WallCheck or visible(camera, character, part.Position, shooterOrigin)) then
                         local candidate = {player = target, character = character, part = part}
                         if target == lockedTarget then retained = candidate end
                         if distanceToCenter < bestDistance or best == nil then
@@ -604,7 +706,8 @@ local function render(dt)
         -- Le a posicao atual da parte, nao uma previsao ou offset inventado.
         local point = best.part.Position
         if best.part:IsDescendantOf(best.character) and finitePosition(point)
-            and (point - position).Magnitude > 0.001 then
+            and (point - position).Magnitude > 0.001
+            and (not settings.WallCheck or visible(camera, best.character, point, shooterOrigin)) then
             local desired = CFrame.lookAt(position, point).Rotation
             local alpha = settings.Response >= 30 and 1
                 or 1 - math.exp(-settings.Response * math.clamp(dt, 0, 0.1))
@@ -623,6 +726,8 @@ end
 cleanup = function()
     if destroyed then return end
     destroyed = true
+    disconnectSpeedWatchers()
+    restoreSpeed()
     clearAim()
     RunService:UnbindFromRenderStep(binding)
     for _, connection in ipairs(connections) do connection:Disconnect() end
